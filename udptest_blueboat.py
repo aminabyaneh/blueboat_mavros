@@ -1,8 +1,9 @@
-"""
-This test script reads the GLOBAL_POSITION_INT (GPS) message from the MAVLink connection
-and prints it to the console. UDP-connection pre-configured to work with BlueBoat.
-Requires setup of secondary MAVLink connection in BlueBoat using port 14770.
-"""
+##########################################################################################
+# This test script reads the GLOBAL_POSITION_INT (GPS) message from the MAVLink connection
+# and prints it to the console. UDP-connection pre-configured to work with BlueBoat.
+
+# Important: Requires setup of secondary MAVLink connection in BlueBoat using port 14770.
+##########################################################################################
 
 from pymavlink import mavutil
 

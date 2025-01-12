@@ -1,5 +1,9 @@
 # Blue Boat MavROS Guide
 
+Part A is focused on ROS networking setups and access to MavROS Topics. In part B, you can directly set up a UDP connection to the boat, and use MavLink Python package to communicate (still testing).
+
+Code partly adopted from [this repository](https://github.com/ImStian/blueboat_globalpathplanner/tree/main).
+
 ## A. ROS Networking Setup
 
 ### **Step 0: Connect to the Blue Boat** 🌐
@@ -142,10 +146,6 @@ If the connection is not working:
 
 ---
 
-This guide ensures that your Blue Boat's ROS networking setup functions correctly. Let me know if you need further assistance! 🚀
-
-## B. Interact with MavROS
-
 ### MavROS Documentation 📚
 
 For detailed information and advanced usage of MavROS, refer to the official [MavROS documentation](https://wiki.ros.org/mavros).
@@ -154,7 +154,7 @@ MavROS is a ROS package that provides communication between ROS and MAVLink-base
 
 > 📝 **Note**: By following the MavROS documentation, you can leverage the full capabilities of your MAVLink-compatible Blue Boat within the ROS ecosystem.
 
-### Designated Topics
+### Designated Topics (Not needed when using MavLink Python package!)
 
 These are the topics we found useful during the initial testing phase. Feel free to add to the list.
 
@@ -178,3 +178,17 @@ These are the services we found useful during the initial testing phase. Feel fr
 | /mavros/param/set        | mavros_msgs/ParamSet       | Set a parameter on the MAVLink device            |
 | /mavros/command/takeoff  | mavros_msgs/CommandTOL     | Command the MAVLink device to take off           |
 | /mavros/command/land     | mavros_msgs/CommandTOL     | Command the MAVLink device to land               |
+
+
+## MAVLink Communication Module (still testing)
+
+Python MavLink package creates a reliable UDP link with the boat for planning missions, and basically all functionalities of QGroundControl.
+
+### Link Test
+
+Run the script [`udptest_bluaboat.py`](udptest_blueboat.py).
+
+
+### MavLink Python Communications
+
+Use the functions provided in [`mavlink_communication.py`](mavlink_communication.py).
