@@ -70,8 +70,8 @@ Now, set the **ROS_MASTER_URI** and **ROS_IP** on both devices.
 1. Add the following commands (replace `ROBOT_IP` with the actual IP of the robot, e.g., `BLUE_OS_IP`):
 
     ```bash
-    export ROS_MASTER_URI=http://BLUE_OS_IP:11311
-    export ROS_IP=BLUE_OS_IP
+    export ROS_MASTER_URI=http://192.168.2.2:11311
+    export ROS_IP=192.168.2.2
     ```
 
 2. To make these settings permanent, add the lines to the `~/.bashrc` file:
@@ -82,14 +82,16 @@ Now, set the **ROS_MASTER_URI** and **ROS_IP** on both devices.
     source ~/.bashrc
     ```
 
+> **⚠️ Critical:** This must be done for all terminals in the BlueBoat!! We are working on a solution to run this at boot-up on BlueOS.
+
 #### **On the Laptop** 💻
 
 1. Open a terminal.
 2. Set the variables (replace `ROBOT_IP` and `LAPTOP_IP` with the actual values):
 
     ```bash
-    export ROS_MASTER_URI=http://BLUE_OS_IP:11311
-    export ROS_IP=COMPUTER_IP
+    export ROS_MASTER_URI=http://192.168.2.2:11311
+    export ROS_IP=192.168.2.1
     ```
 
 3. To make these permanent, add them to `~/.bashrc`:
