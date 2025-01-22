@@ -116,7 +116,7 @@ def wait_for_gps(the_connection):
 
     gps = None
     while gps == None or (gps.lat == 0) or (gps.lon == 0): # GPS not received or invalid
-        gps = the_connection.recv_match(type='GLOBAL_POSITION_INT',blocking=True)
+        gps = the_connection.recv_match(type='GLOBAL_POSITION_INT', blocking=True)
     return gps
 
 
@@ -542,45 +542,3 @@ def set_mission_current(the_connection, seq):
                                          seq, 1, 0, 0, 0, 0, 0, 0)
     ack(the_connection, "COMMAND_ACK")
 
-
-
-if __name__ == '__main__':
-    # Start a connection listening to a UDP port
-    the_connection = mavutil.mavlink_connection('udpin:localhost:14541')
-
-    # Wait for the first heartbeat
-    # This sets the system and component ID of remote system for the link
-    the_connection.wait_heartbeat()
-    print('MAVLINK - Heartbeat from the system (system %u component %u)' %
-          (the_connection.target_system, the_connection.target_component))
-
-    designated_points = [(63.45309582272496, 10.382939373976727),
-                         (63.455148870536945, 10.385791305113983),
-                         (63.454400937090455, 10.38739658388185),
-                         (63.45296988750512, 10.387678361504705),
-                         (63.451744852227, 10.384553191505796)]
-
-    mission_waypoints = []
-    for idx, waypoint in enumerate(designated_points):
-        item = MissionItem(idx, 0, 1, waypoint[0], waypoint[1])
-        mission_waypoints.append(item)
-
-    # These two are redundant. Use go to location in QGC instead
-    set_home(the_connection, (63.45033458273741, 10.378879055844461), 0)
-    go_home(the_connection)
-
-    # set_mode(the_connection, 192) # Changing mode to Preflight (Does not do anything)
-    # clear_mission(the_connection)
-    # set_mode(the_connection, 216) # Changing mode to Guided
-    # arm_disarm(the_connection, 1)
-    # takeoff(the_connection)
-
-    # go_home(the_connection)
-    # upload_mission(the_connection, mission_waypoints)
-    # start_mission(the_connection)
-
-    # print_mission_items(the_connection)
-    # wait_for_mission_completion(the_connection, len(mission_waypoints))
-    # print('Mission was completed!')
-    # clear_mission(the_connection)
-    # arm_disarm(the_connection, 0)
