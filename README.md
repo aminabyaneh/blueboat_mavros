@@ -182,15 +182,20 @@ These are the services we found useful during the initial testing phase. Feel fr
 | /mavros/command/land     | mavros_msgs/CommandTOL     | Command the MAVLink device to land               |
 
 
-## MAVLink Communication Module (still testing)
+## MAVLink Communication Module
 
 Python MavLink package creates a reliable UDP link with the boat for planning missions, and basically all functionalities of QGroundControl.
 
+
 ### Link Test
 
-Run the script [`udptest_bluaboat.py`](udptest_blueboat.py).
+Run the script [`mavlink_udp_heartbeat.py`](mavlink/mavlink_udp_heartbeat.py). You need to have the boat and base station set up, and your host machine connected to the same base station network.
+
+You can use the BlueOS webpage, typically on `192.168.2.2` in the local network, to check Mavlink server address and ports.
+
+> **⚠️ Note:** We successfully tested this using the **GCS_Client_Link** port and IP. This was set to `192.168.2.2:14550` at the time. It can be found in the **MavLink Endpoints** menu, in **pirate mode**.
 
 
-### MavLink Python Communications
+### MavLink Python Library
 
-Use the functions provided in [`mavlink_communication.py`](mavlink_communication.py).
+Use the functions provided in [`mavlink_library.py`](mavlink/mavlink_library.py) to build scripts like [`mavlink_data_logger.py`](mavlink/mavlink_data_logger.py). These scripts rely on a reliable connection to Mavlink servers on the boat through the base station.

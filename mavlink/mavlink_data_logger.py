@@ -2,11 +2,13 @@
 # This test script reads the GLOBAL_POSITION_INT (GPS) message from the MAVLink connection
 # and prints it to the console. UDP-connection pre-configured to work with BlueBoat.
 
-# IMPORTANT NOTE: We successfully tested this using GCS_Client_Link port and IP.
+# NOTE: We successfully tested this using GCS_Client_Link port and IP.
 # This was set to 192.168.2.2:14550 at the time. It can be found in MavLink Endpoints menu,
 # in pirate mode.
 
-
+# NOTE: This script is fully tested. However, it requires a MAVLink connection
+# to the boat to work. One can opt to deploy this on the boat itself, depending on the
+# memory and processing power available.
 ##########################################################################################
 
 from pymavlink import mavutil
@@ -88,6 +90,7 @@ def main():
       timestamp = pd.Timestamp.now().strftime('%m%d_%H%M')
       gps_df.to_csv(os.path.join(log_dir, f'gps_data_{timestamp}.csv'), index=False)
       odom_df.to_csv(os.path.join(log_dir, f'odom_data_{timestamp}.csv'), index=False)
+
 
 if __name__ == "__main__":
       main()

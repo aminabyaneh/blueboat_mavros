@@ -4,6 +4,7 @@ import random
 import genesis as gs
 
 from typing import List
+from pynput import keyboard
 
 
 class SimConfig:
@@ -15,7 +16,7 @@ class SimConfig:
         self.device = gs.cuda
 
         # parallel envs
-        self.num_envs = 2
+        self.num_envs = 50
         self.env_spacing = (15.0, 15.0)
 
         # camera config
@@ -40,6 +41,12 @@ class SimConfig:
         self.velocity_min = -self.velocity
         self.resample_velocity_steps = 200
 
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+
+        self.linear_increment = 2.0
+        self.angular_increment = 2.0
+
 sim_config = SimConfig()
 
 # initialize the physics engine
@@ -56,7 +63,8 @@ scene = gs.Scene(
     rigid_options=gs.options.RigidOptions(
         dt=sim_config.dt,
     ),
-    vis_options=gs.options.VisOptions(n_rendered_envs=1),
+    # vis_options=gs.options.VisOptions(n_rendered_envs=1),
+    show_FPS=False,
 )
 
 # add simulation plane
@@ -91,6 +99,23 @@ for obstacle_idx in range(sim_config.num_obstacles):
     obstacle = scene.add_entity(gs.morphs.Cylinder(pos=pos, radius=radius, height=sim_config.obstacle_height))
     dynamic_obstacles.append({"obstacle": obstacle, "pos": pos, "radius": radius})
 
+
+# add blue box covering the entire field
+blue_box = scene.add_entity(
+    morph=gs.morphs.Box(
+        pos=(0.0, 0.0, sim_config.obstacle_height / 8),
+        size=(sim_config.grid_size[0] * 2 + 4.0, sim_config.grid_size[1] * 2 + 1.0, sim_config.obstacle_height / 4),
+        fixed=True,
+        collision=False,
+    ),
+    surface=gs.surfaces.Rough(
+        diffuse_texture=gs.textures.ColorTexture(
+            color=(0.0, 0.5, 1.0),
+        ),
+    ),
+)
+
+
 # add target
 target = scene.add_entity(
     morph=gs.morphs.Mesh(
@@ -107,13 +132,13 @@ target = scene.add_entity(
     ),
 )
 
-boat = scene.add_entity(
+# add boat cover
+boat_cover = scene.add_entity(
     morph=gs.morphs.Mesh(
-        file="meshes/boat/boat.obj",
-        scale=0.25,
+        file="assets/boat.stl",
+        scale=0.0008,
         collision=False,
     ),
-
     surface=gs.surfaces.Rough(
         diffuse_texture=gs.textures.ColorTexture(
             color=(0.0, 0.0, 1.0),
@@ -121,12 +146,27 @@ boat = scene.add_entity(
     ),
 )
 
-boat_actuator = scene.add_entity(
-    gs.morphs.Box(pos=[-5.4, 0, 0],
-                  euler=(0, 0, 0),
-                  size=[1.0, 0.5, 0.15],
-                  collision=True)
+# add boat collision mesh
+boat_collision = scene.add_entity(
+    gs.morphs.Cylinder(pos=[-5.4, 0, 0],
+                       radius=0.4,
+                       height=0.1,
+                       collision=True,
+                       visualization=False),
+    surface=gs.surfaces.Rough(
+        diffuse_texture=gs.textures.ColorTexture(
+            color=(0.0, 1.0, 0.0),
+        ),
+    ),
 )
+
+# define initial velocities
+
+linear_velocity = sim_config.linear_velocity
+angular_velocity = sim_config.angular_velocity
+
+linear_increment = sim_config.linear_increment
+angular_increment = sim_config.angular_increment
 
 # build the scene
 if sim_config.num_envs == 1:
@@ -135,21 +175,59 @@ else:
     scene.build(n_envs=sim_config.num_envs, env_spacing=sim_config.env_spacing)
 
 # set the boat position
-boat_pos = torch.zeros(sim_config.num_envs, 3)
-boat_pos[:, 0] = -5.5
 
-boat_quat = torch.zeros(sim_config.num_envs, 4)
-boat_quat[:, 0] = 0.707
-boat_quat[:, 1] = 0.707
-boat_quat[:, 2] = 0.0
-boat_quat[:, 3] = 0.0
+# keyboard handle
+def on_press(key):
+    global linear_velocity, angular_velocity
 
+    if key == keyboard.Key.up:
+        linear_velocity = linear_increment
+    if key == keyboard.Key.down:
+        linear_velocity = -linear_increment
+
+    if key == keyboard.Key.left:
+        angular_velocity = angular_increment
+    if key == keyboard.Key.right:
+        angular_velocity = -angular_increment
+
+def on_release(key):
+    global linear_velocity, angular_velocity
+
+    if key == keyboard.Key.up:
+        linear_velocity = 0
+    if key == keyboard.Key.down:
+        linear_velocity = 0
+
+    if key == keyboard.Key.left:
+        angular_velocity = 0
+    if key == keyboard.Key.right:
+        angular_velocity = 0
+
+# keyboard initiate
+listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+listener.start()
+
+# set the boat cover
+boat_cover_pos = gs.tensor([[-5.5, 0.0, 0.1, 0.0, 0.0, 0.0]])
+boat_cover_pos = boat_cover_pos.repeat(sim_config.num_envs, 1)
+boat_cover.set_dofs_position(boat_cover_pos)
 
 # simulation main loop
 for simulation_step in range(sim_config.sim_duration):
 
-    boat.set_pos(boat_pos, zero_velocity=True, envs_idx=[idx for idx in range(sim_config.num_envs)])
-    boat.set_quat(boat_quat, zero_velocity=True, envs_idx=[idx for idx in range(sim_config.num_envs)])
+    # set the velocities to the boat
+    current_angle = boat_collision.get_dofs_position()[0, 5]
+    boat_velocity = gs.tensor([[linear_velocity * torch.cos(current_angle),
+                                linear_velocity * torch.sin(current_angle),
+                                0.0, 0.0, 0.0, angular_velocity]])
+    boat_velocity = boat_velocity.repeat(sim_config.num_envs, 1)
+    boat_collision.set_dofs_velocity(boat_velocity)
+
+    # place the cover nicely
+    boat_cover_pos[:, 0] = boat_collision.get_dofs_position()[:, 0] # offset the boat cover
+    boat_cover_pos[:, 1] = boat_collision.get_dofs_position()[:, 1]
+    boat_cover_pos[:, 5] = boat_collision.get_dofs_position()[:, 5]
+    boat_cover.set_dofs_position(boat_cover_pos)
 
     if simulation_step % sim_config.resample_velocity_steps == 0:
         for obstacle_dict in dynamic_obstacles:
@@ -182,4 +260,20 @@ for simulation_step in range(sim_config.sim_duration):
 
         obstacle.set_dofs_velocity(velocity)
 
+
+    # check if the boat is about to leave the grid
+    boat_position = boat_collision.get_dofs_position()
+    boat_velocity = boat_collision.get_dofs_velocity()
+
+    mask_x = (boat_position[:, 0] + boat_velocity[:, 0] * sim_config.dt > (sim_config.grid_size[0] + 1.5)) | \
+             (boat_position[:, 0] + boat_velocity[:, 0] * sim_config.dt < -(sim_config.grid_size[0] + 1.5))
+    boat_velocity[mask_x, 0] = 0.0
+
+    mask_y = (boat_position[:, 1] + boat_velocity[:, 1] * sim_config.dt > sim_config.obstacle_max_pos[1]) | \
+             (boat_position[:, 1] + boat_velocity[:, 1] * sim_config.dt < sim_config.obstacle_min_pos[1])
+    boat_velocity[mask_y, 1] = 0.0
+
+    boat_collision.set_dofs_velocity(boat_velocity)
+
+    # step the simulation
     scene.step()
