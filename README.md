@@ -201,3 +201,45 @@ You can use the BlueOS webpage, typically on `192.168.2.2` in the local network,
 ### MavLink Python Library
 
 Use the functions provided in [`mavlink_library.py`](mavlink/mavlink_library.py) to build scripts like [`mavlink_data_logger.py`](mavlink/mavlink_data_logger.py). These scripts rely on a reliable connection to Mavlink servers on the boat through the base station.
+
+
+## Genesis Environment
+
+The `genesis/` folder contains the Blue Boat Genesis Environment, which is designed for efficient and parallelized simulation for reinforcement learning. Here are the important points and steps to get started with training:
+
+1. **Environment Setup**: The environment is built using Genesis components and the blue boat STL file.
+2. **Parallelization**: The simulation supports parallel execution, allowing multiple instances to run simultaneously for faster training.
+3. **Customization**: The environment can be customized to simulate different scenarios and conditions, making it versatile for various training needs.
+
+#### Training the environment with RSL-RL
+
+1. **Install Genesis and RSL-RL**:
+    - [Genesis Installation Guide](https://genesis-world.readthedocs.io/en/latest/user_guide/overview/installation.html)
+
+    - For RSL-RL:
+
+    ```bash
+    git clone https://github.com/leggedrobotics/rsl_rl
+    cd rsl_rl && git checkout v1.0.2 && pip install -e .
+    ```
+
+2. **Run the Simulation**:
+    - Navigate to the `genesis/` folder and launch the interactive environment. Just to get a feeling of the environment.
+
+    ```bash
+    python usv_interactive.py
+    ```
+
+4. **Training Scripts**:
+    - Use the provided training scripts to start training your reinforcement learning models.
+
+    ```bash
+    python usv_rslrl_train.py --num_envs 8192 --max_iterations 500
+    ```
+
+5. **Monitor Training**:
+    - Use tools like TensorBoard to monitor the training progress and visualize the results.
+
+    ```bash
+    tensorboard --logdir genesis/logs/
+    ```
