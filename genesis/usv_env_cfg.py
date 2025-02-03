@@ -21,6 +21,7 @@ env_cfg = {
     "num_actions": 2, # velocity: magnitude + angle
     "episode_length_seconds": 5.0,
     "target_color": (1.0, 0.0, 0.0),
+    "image_observation": True,
 
     # obstacles
     "obstacle_static": True,

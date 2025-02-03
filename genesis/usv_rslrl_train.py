@@ -32,8 +32,8 @@ def get_train_cfg(exp_name, max_iterations):
         "init_member_classes": {},
         "policy": {
             "activation": "tanh",
-            "actor_hidden_dims": [256, 256, 256, 256, 256],
-            "critic_hidden_dims": [128, 128, 128, 128],
+            "actor_hidden_dims": [256, 256, 256],
+            "critic_hidden_dims": [128, 128, 128],
             "init_noise_std": 1.0,
         },
         "runner": {

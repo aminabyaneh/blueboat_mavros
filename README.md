@@ -211,6 +211,14 @@ The `genesis/` folder contains the Blue Boat Genesis Environment, which is desig
 2. **Parallelization**: The simulation supports parallel execution, allowing multiple instances to run simultaneously for faster training.
 3. **Customization**: The environment can be customized to simulate different scenarios and conditions, making it versatile for various training needs.
 
+
+### Simulation in Action 🎥
+
+Here's a quick preview of the Blue Boat Genesis Environment in action:
+
+![Blue Boat Simulation](genesis/videos/obstacle_avoidance_rollout.gif)
+
+
 #### Training the environment with RSL-RL
 
 1. **Install Genesis and RSL-RL**:
