@@ -3,15 +3,10 @@ usv_env_genesis.py
 
 BoatEnv is an instanciable class for simulating an environment with boats and obstacles using the Genesis simulation framework.
 
-Author: Amin Abyaneh
-Year: 2025
-
 TODO:
-- Implement boat appearance using the commented code.
-- Add functionality for goal-conditioned setup using command_cfg.
-- Implement the _resample_commands method.
+- Randomize the boat and target positions.
 - Add more complex reward functions: speed, fuel consumption, etc.
-- Implement the _is_collision method.
+- Merge boat visualization and physics.
 """
 
 import torch
@@ -19,351 +14,504 @@ import math
 import random
 
 import genesis as gs
+
+from typing import Dict
 from scipy.spatial.transform import Rotation as R
 
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-# config for the environment
-env_cfg = {
-    # sim
-    "dt": 0.01,
-    "max_visualize_fps": 30,
-    "total_sim_duration": 5000,
-    "device": gs.cuda,
+class USVEnv:
+    """ USVEnv is a simulation environment for Unmanned Surface Vehicles (USVs) using reinforcement learning.
 
-    # camera
-    "camera_pos": (0, 0, 10),
-    "camera_lookat": (0.0, 0.0, 0),
-    "camera_fov": 40.0,
-    "visualize_target": True,
+    Example:
 
-    # envs
-    "num_envs": 12,
-    "env_spacing": (15.0, 15.0),
+    >>>    env = USVEnv(env_cfg=env_cfg,
+    >>>                 obs_cfg=obs_cfg,
+    >>>                 reward_cfg=reward_cfg,
+    >>>                 command_cfg=command_cfg)
+    >>>
+    >>>    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    >>>    action = torch.tensor([1.0, 0.5], device=device)
+    >>>    action = action.repeat(env_cfg["num_envs"], 1)
+    >>>    obs, _, reward, reset, extras = env.step(action)
 
-    "num_actions": 3,
-    "episode_length_seconds": 30.0,
+    1. Simple test script can be found in the usv_env_test.py file.
+    2. Training pipeline using Nvidia's RSL_RL can be found in the usv_rslrl_train.py file.
+    3. Evaluation pipeline using Nvidia's RSL_RL can be found in the usv_rslrl_eval.py file.
+    """
 
-    # obstacles
-    "num_obstacles": 10,
-    "obstacle_height": 0.1,
-    "obstacle_z_pos": 0.0,
-    "obstacle_max_radius": 0.3,
-    "obstacle_min_radius": 0.1,
-
-    "obstacle_max_pos": (4.0, 2.0),
-    "obstacle_min_pos": (-4.0, -2.0),
-    "obstacle_velocity_max": 1.0,
-    "obstacle_velocity_min": -1.0,
-    "obstacle_resample_velocity_steps": 200,
-
-
-    # boat shell (visualization)
-    "boat_shell_start_pos": (-5.0, 0.0, 0.0),
-    "boat_shell_start_quat": (0.707, 0.707, 0.0, 0.0),
-    "boat_shell_scale": 0.25,
-    "boat_shell_color": (0.0, 0.0, 1.0),
-
-    # boat core (physics)
-    "boat_core_start_pos": (-5.5, 0.0, 0.0),
-    "boat_core_start_quat": (0.0, 0.0, 0.0, 1.0),
-    "boat_core_size": (1.0, 0.5, 0.15),
-
-    "boat_max_speed": 1.0,
-    "at_target_threshold": 0.05,
-}
-
-# config for the observations
-obs_cfg = {
-    "num_obs": env_cfg["num_obstacles"] * (2 + 2 + 1), # obstacle position + velocity + radius
-}
-
-# config for the command
-command_cfg = {
-    "num_commands": 3,
-}
-
-class BoatEnv:
     def __init__(self,
-                 num_envs,
-                 env_cfg,
-                 obs_cfg,
-                 command_cfg,
-                 show_viewer=False,
-                 device=device):
+                 env_cfg: Dict,
+                 obs_cfg: Dict,
+                 command_cfg: Dict,
+                 reward_cfg: Dict,
+                 num_envs=None):
+        """ Initialize the USV environment.
 
-        self.device = torch.device(device)
+        Configuration dicts are used to configure the environment, observations, commands, and rewards.
+        They can be found in the usv_env_cfg.py file.
 
-        self.num_envs = num_envs if num_envs > 1 else env_cfg["num_envs"]
-        self.num_obs = obs_cfg["num_obs"]
-        self.num_actions = env_cfg["num_actions"]
-        self.num_commands = command_cfg["num_commands"]
+        Args:
+            env_cfg (dict): Configuration dictionary for the environment.
+            obs_cfg (dict): Configuration dictionary for observations.
+            command_cfg (dict): Configuration dictionary for commands.
+            reward_cfg (dict): Configuration dictionary for rewards.
+            num_envs (int, optional): Number of environments. Defaults to None.
+        """
 
-        self.dt = env_cfg["dt"]
-        self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.dt)
+        # set the device to GPU
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
+        # torch random seed
+        torch.manual_seed(random.randint(0, 10000))
+
+        # harvest environment configurations
         self.env_cfg = env_cfg
         self.obs_cfg = obs_cfg
-
+        self.reward_cfg = reward_cfg
         self.command_cfg = command_cfg # TODO: to be used for goal conditioned setup
+
+        self.num_envs = num_envs if num_envs is not None else self.env_cfg["num_envs"]
+        self.num_obs = obs_cfg["num_obs"]
+        self.num_privileged_obs = None
+        self.num_actions = self.env_cfg["num_actions"]
+        self.num_commands = command_cfg["num_commands"]
+
+        self.dt = self.env_cfg["dt"]
+        self.reward_scales = reward_cfg["reward_scales"]
+        self.max_episode_length = math.ceil(self.env_cfg["episode_length_seconds"] / self.dt)
+
+        # initialize the physics engine
+        gs.init(backend=gs.cuda if self.device == "cuda:0" else gs.cpu)
 
         # create scene
         self.scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=self.dt, substeps=2),
             viewer_options=gs.options.ViewerOptions(
-                max_FPS=env_cfg["max_visualize_fps"],
-                camera_pos=env_cfg["camera_pos"],
-                camera_lookat=env_cfg["camera_lookat"],
-                camera_fov=env_cfg["camera_fov"],
+                max_FPS=self.env_cfg["max_visualize_fps"],
+                camera_pos=self.env_cfg["camera_pos"],
+                camera_lookat=self.env_cfg["camera_lookat"],
+                camera_fov=self.env_cfg["camera_fov"],
             ),
-            vis_options=gs.options.VisOptions(n_rendered_envs=1),
-            show_viewer=show_viewer,
+            vis_options=gs.options.VisOptions(n_rendered_envs=self.env_cfg["num_visualize_envs"]),
+            show_viewer=self.env_cfg["render"],
+            show_FPS=self.env_cfg["show_fps"],
         )
+
+        # add camera
+        if self.env_cfg["visualize_camera"]:
+            self.cam = self.scene.add_camera(
+                res=(640, 480),
+                pos=(0.0, -4.0, 6),
+                lookat=(0, 0, 0),
+                fov=70,
+                GUI=True,
+            )
 
         # add plane
         self.scene.add_entity(gs.morphs.Plane())
 
         # add random obstacles, initial placement
-        dynamic_obstacles = []
+        self.dynamic_obstacles = []
 
-        self.num_obstacles = env_cfg["num_obstacles"]
+        self.num_obstacles = self.env_cfg["num_obstacles"]
         for _ in range(self.num_obstacles):
             while True:
                 # random radius
-                radius = random.uniform(env_cfg["obstacle_min_radius"], env_cfg["obstacle_max_radius"])
+                radius = self.env_cfg["obstacle_max_radius"] # random.uniform(self.env_cfg["obstacle_min_radius"], self.env_cfg["obstacle_max_radius"])
 
                 # random positions
-                position = (random.uniform(env_cfg["obstacle_min_pos"][0], env_cfg["obstacle_max_pos"][0]),
-                            random.uniform(env_cfg["obstacle_min_pos"][1], env_cfg["obstacle_max_pos"][1]),
-                            env_cfg["obstacle_z_pos"])
+                pose = (random.uniform(self.env_cfg["obstacle_min_pos"][0], self.env_cfg["obstacle_max_pos"][0]),
+                            random.uniform(self.env_cfg["obstacle_min_pos"][1], self.env_cfg["obstacle_max_pos"][1]),
+                            self.env_cfg["obstacle_z_pos"], 0.0, 0.0, 0.0)
 
                 # check for initial collision
-                if not self._is_collision(position, radius, dynamic_obstacles):
+                if not self._is_collision(pose[:2], radius, self.dynamic_obstacles):
                     break
 
-            obstacle = self.scene.add_entity(gs.morphs.Cylinder(pos=position, radius=radius,
-                                                           height=env_cfg["obstacle_height"]))
-            dynamic_obstacles.append({"obstacle": obstacle, "position": position, "radius": radius})
+            obstacle = self.scene.add_entity(gs.morphs.Cylinder(pos=pose[:3], radius=radius,
+                                             height=self.env_cfg["obstacle_height"], collision=False))
+            self.dynamic_obstacles.append({"obstacle": obstacle, "pose": pose, "radius": radius})
 
-
-        # add target marker
-        self.target = self.scene.add_entity(
-            morph=gs.morphs.Mesh(
-                file="meshes/sphere.obj",
-                scale=0.2,
-                pos=(5.0, 0.0, 0.0),
+        # sea as a non-colliding static object, change to liquid in future
+        self.sea = self.scene.add_entity(
+            morph=gs.morphs.Box(
+                pos=(0.0, 0.0, self.env_cfg["obstacle_height"] / 8),
+                size=(self.env_cfg["grid_size"][0] * 2 + 4.0,
+                      self.env_cfg["grid_size"][1] * 2 + 1.0,
+                      self.env_cfg["obstacle_height"] / 4),
                 fixed=True,
                 collision=False,
             ),
             surface=gs.surfaces.Rough(
                 diffuse_texture=gs.textures.ColorTexture(
-                    color=(1.0, 0.0, 0.0),
+                    color=(0.0, 0.5, 1.0),
                 ),
             ),
         )
 
-        # TODO: add the boat shell for visualization
-        # self.boat_shell_pos_init = torch.tensor(env_cfg["boat_start_pos"], device=self.device, dtype=gs.tc_float)
-        # self.boat_shell_quat_init = torch.tensor([0.707, 0.707, 0.0, 0.0], device=self.device, dtype=gs.tc_float)
+        # add target marker
+        self.target = None
+        if self.env_cfg["visualize_target"]:
+            self.target = self.scene.add_entity(
+                morph=gs.morphs.Mesh(
+                    file="meshes/sphere.obj",
+                    scale=0.2,
+                    pos=(5.0, 0.0, 0.0), # fixed target for now
+                    fixed=True,
+                    collision=False,
+                ),
+                surface=gs.surfaces.Rough(
+                    diffuse_texture=gs.textures.ColorTexture(
+                        color=self.env_cfg["target_color"],
+                    ),
+                ),
+            )
 
-        # self.boat = self.scene.add_entity(
-        #     morph=gs.morphs.Mesh(
-        #         file="meshes/boat/boat.obj",
-        #         scale=env_cfg["boat_scale"],
-        #         collision=False,
-        #     ),
-
-        #     surface=gs.surfaces.Rough(
-        #         diffuse_texture=gs.textures.ColorTexture(
-        #             color=self.env_cfg["boat_color"],
-        #         ),
-        #     ),
-        # )
+        # add boat cover for visualization
+        self.boat_cover = self.scene.add_entity(
+            morph=gs.morphs.Mesh(
+                file="assets/boat.stl",
+                scale=self.env_cfg["boat_shell_scale"],
+                collision=False,
+            ),
+            surface=gs.surfaces.Rough(
+                diffuse_texture=gs.textures.ColorTexture(
+                    color=self.env_cfg["boat_shell_color"],
+                ),
+            ),
+        )
 
         # add boat core for physics
-        self.boat_core_pos_init = torch.tensor(env_cfg["boat_core_start_pos"], device=self.device, dtype=gs.tc_float)
-        self.boat_core_quat_init = torch.tensor(env_cfg["boat_core_start_quat"], device=self.device, dtype=gs.tc_float)
+        self.boat_core_pose_init = torch.tensor(self.env_cfg["boat_core_start_pose"],
+                                                device=self.device, dtype=gs.tc_float)
 
         self.boat_core = self.scene.add_entity(
-            gs.morphs.Box(pos=env_cfg["boat_core_start_pos"],
-                quat=env_cfg["boat_core_start_quat"],
-                size=env_cfg["boat_core_size"],
-                collision=True)
+            gs.morphs.Cylinder(pos=self.boat_core_pose_init[:3].cpu().numpy(),
+                               radius=self.env_cfg["boat_core_radius"],
+                               height=self.env_cfg["boat_core_height"],
+                               collision=True,
+                               visualization=False),
         )
 
         # build scene
-        self.scene.build(n_envs=self.num_envs, env_spacing=env_cfg["env_spacing"])
+        self.scene.build(n_envs=self.num_envs, env_spacing=self.env_cfg["env_spacing"])
 
-        # initialize buffers
+        # prepare reward functions and multiply reward scales by dt
+        self.reward_functions, self.episode_sums = dict(), dict()
+        for name in self.reward_scales.keys():
+            self.reward_scales[name] *= self.dt
+            self.reward_functions[name] = getattr(self, "_reward_" + name)
+            self.episode_sums[name] = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
+
+        # make obstacles tensor (position, velocity, radius)
+        self.obstacle_position = torch.zeros((self.num_envs, self.num_obstacles, 2),
+                                             device=self.device, dtype=gs.tc_float)
+        self.obstacle_pose = torch.zeros((self.num_envs, self.num_obstacles, 6),
+                                             device=self.device, dtype=gs.tc_float)
+        # velocity needs to be 6 to be applied
+        self.obstacle_velocity = torch.zeros((self.num_envs, self.num_obstacles, 6),
+                                             device=self.device, dtype=gs.tc_float)
+
+        # fill the init position and radius
+        for i, obstacle_dict in enumerate(self.dynamic_obstacles):
+            self.obstacle_position[:, i] = torch.tensor(obstacle_dict["pose"][:2],
+                                                        device=self.device, dtype=gs.tc_float)
+            self.obstacle_pose[:, i] = torch.tensor(obstacle_dict["pose"],
+                                                    device=self.device, dtype=gs.tc_float)
+
+        # boat cover tensors
+        self.boat_cover_pose = torch.tensor(self.env_cfg["boat_shell_start_pose"],
+                                            device=self.device, dtype=gs.tc_float)
+
+        self.boat_cover_pose = self.boat_cover_pose.repeat(self.num_envs, 1)
+        self.boat_cover.set_dofs_position(self.boat_cover_pose)
+
+        # rl buffers
         self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device, dtype=gs.tc_float)
         self.rew_buf = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
         self.reset_buf = torch.ones((self.num_envs,), device=self.device, dtype=gs.tc_int)
         self.episode_length_buf = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_int)
+        self.obstacle_radius = torch.tensor(self.env_cfg["obstacle_max_radius"], device=self.device, dtype=gs.tc_float)
 
         # targets
-        self.commands = torch.zeros((self.num_envs, self.num_commands), device=self.device, dtype=gs.tc_float)
-
+        self.commands = torch.tensor((5.0, 0.0, 0.0), device=self.device, dtype=gs.tc_float).repeat(self.num_envs, 1)
         self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device, dtype=gs.tc_float)
         self.last_actions = torch.zeros_like(self.actions)
 
-        # add for the boat later
-        self.base_pos = torch.tensor(env_cfg["boat_core_start_pos"],
-                                     device=self.device,
-                                     dtype=gs.tc_float).repeat(self.num_envs, 1)
+        # boat core tensors
+        self.boat_core_pose = self.boat_core_pose_init.repeat(self.num_envs, 1)
+        self.boat_core_velocity = torch.zeros((self.num_envs, 6), device=self.device, dtype=gs.tc_float)
+        self.last_core_pose = torch.zeros_like(self.boat_core_pose)
+        self.rel_boat_pos = self.commands - self.boat_core_pose[:, :3]
+        self.last_rel_boat_pos = torch.zeros_like(self.rel_boat_pos)
 
-        self.base_vel = torch.zeros((self.num_envs, 3), device=self.device, dtype=gs.tc_float)
-        self.last_base_pos = torch.zeros_like(self.base_pos)
+        # leaving grid buffer
+        self.leaving_grid_buf = torch.zeros_like(self.rew_buf)
 
-        self.obstacle_pos = torch.zeros((self.num_envs, self.num_obstacles, 3), device=self.device, dtype=gs.tc_float)
-        self.obstacle_size = torch.zeros((self.num_envs, self.num_obstacles, 3), device=self.device, dtype=gs.tc_float)
-        self.obstacle_vel = torch.zeros((self.num_envs, self.num_obstacles, 3), device=self.device, dtype=gs.tc_float)
-        self.last_obstacle_pos = torch.zeros_like(self.obstacle_pos)
+        # distance to obstacles
+        self.dist_to_obstacles = torch.norm(self.obstacle_position - self.boat_core_pose.unsqueeze(1).repeat(1, self.num_obstacles, 1)[:, :, :2], dim=2)
 
-        self.extras = dict()  # extra information for logging
+        # extra information for logging
+        self.extras = dict()
 
-
-    # def _resample_commands(self, envs_idx):
-    #     self.commands[envs_idx, 0] = gs_rand_float(*self.command_cfg["pos_x_range"], (len(envs_idx),), self.device)
-    #     self.commands[envs_idx, 1] = gs_rand_float(*self.command_cfg["pos_y_range"], (len(envs_idx),), self.device)
-    #     self.commands[envs_idx, 2] = gs_rand_float(*self.command_cfg["pos_z_range"], (len(envs_idx),), self.device)
-    #     if self.target is not None:
-    #         self.target.set_pos(self.commands[envs_idx], zero_velocity=True, envs_idx=envs_idx)
-
-    def _at_target(self):
-        at_target = (
-            (torch.norm(self.rel_pos, dim=1) < self.env_cfg["at_target_threshold"]).nonzero(as_tuple=False).flatten()
-        )
-        return at_target
+        # step counter TODO: merge with episode length?
+        self.step_counter = 0
 
     def step(self, actions):
+        """ Step the simulation with the given actions.
+
+        Args:
+            actions (torch.Tensor): Actions to apply to the environment.
+
+        Returns:
+            Tuple(torch.Tensor): Observations, Previllaged observations, Rewards, Resets, Extras.
+        """
+
         # apply actions
-        self.actions[:] = actions
+        # action size is: (self.env_cfg.num_envs, 1 (velocity magnitude), 1 (velocity angle))
+        # action variable range is: [-1, 1]
+        self.actions[:] = torch.clamp(actions, -self.env_cfg["action_clamp"], +self.env_cfg["action_clamp"])
+
+        # decouple actions
+        linear_velocity = self.actions[:, 0].unsqueeze(1) * self.env_cfg["boat_max_lin_speed"]
+        angular_velocity = self.actions[:, 1].unsqueeze(1) * self.env_cfg["boat_max_ang_speed"]
+
+        self.boat_core_pose = self.boat_core.get_dofs_position()
+        current_angle = self.boat_core_pose[:, 5].unsqueeze(1)
+
+        # form a single velocity vector
+        linear_velocity_x = linear_velocity * torch.cos(current_angle)
+        linear_velocity_y = linear_velocity * torch.sin(current_angle)
+
+        self.boat_core_velocity = torch.cat((linear_velocity_x,
+                                             linear_velocity_y,
+                                             torch.zeros_like(linear_velocity_y),
+                                             torch.zeros_like(angular_velocity),
+                                             torch.zeros_like(angular_velocity),
+                                             angular_velocity), dim=1)
+
+        # check if the boat is about to leave the grid on the next step
+        next_x_pos = self.boat_core_pose[:, 0] + self.boat_core_velocity[:, 0] * self.env_cfg["dt"]
+        mask_x_boat = (next_x_pos > (self.env_cfg["grid_size"][0] + 1.5)) |  \
+                      (next_x_pos < -(self.env_cfg["grid_size"][0] + 1.5))
+
+        next_y_pos = self.boat_core_pose[:, 1] + self.boat_core_velocity[:, 1] * self.env_cfg["dt"]
+        mask_y_boat = (next_y_pos > self.env_cfg["grid_size"][1]) | \
+                      (next_y_pos < -(self.env_cfg["grid_size"][1]))
+
+        # leaving the grid penalty
+        if mask_x_boat.any() or mask_y_boat.any():
+            self.leaving_grid_buf[mask_x_boat | mask_y_boat] = 1
+        else:
+            self.leaving_grid_buf[:] = 0
+
+        # zero vel if hitting the boundries
+        self.boat_core_velocity[mask_x_boat | mask_y_boat] = 0.0
+
+        # apply the velocity
+        self.boat_core.set_dofs_velocity(self.boat_core_velocity)
+
+        # update dynamic objects
+        if not self.env_cfg["obstacle_static"]:
+            self._update_obstacle_velocities()
 
         # step the simulation
         self.scene.step()
+        self.step_counter += 1
+
+        # place the cover nicely
+        self.boat_cover_pose[:, 0] = self.boat_core.get_dofs_position()[:, 0]
+        self.boat_cover_pose[:, 1] = self.boat_core.get_dofs_position()[:, 1]
+        self.boat_cover_pose[:, 5] = self.boat_core.get_dofs_position()[:, 5] - 0.08
+        self.boat_cover.set_dofs_position(self.boat_cover_pose)
+
+        # place the obstacles
+        for i, obstacle_dict in enumerate(self.dynamic_obstacles):
+            obstacle_dict["obstacle"].set_dofs_position(self.obstacle_pose[:, i], zero_velocity=True)
 
         # update buffers
         self.episode_length_buf += 1
-        self.last_base_pos[:] = self.base_pos[:]
-        self.base_pos[:] = self.drone.get_pos()
-        self.rel_pos = self.commands - self.base_pos
-        self.last_rel_pos = self.commands - self.last_base_pos
-        self.base_quat[:] = self.drone.get_quat()
+        self.last_core_pose[:] = self.boat_core_pose[:]
+        self.boat_core_pose[:] = self.boat_core.get_dofs_position()
 
-        # resample commands
-        envs_idx = self._at_target()
-        self._resample_commands(envs_idx)
+        self.rel_boat_pos = self.commands - self.boat_core_pose[:, :3] # only xyz matters
+        self.last_rel_boat_pos = self.commands - self.last_core_pose[:, :3]
+
+        # check if boat has collided with any obstacle
+        boat_positions_repeated = self.boat_core_pose[:, :2].unsqueeze(1).repeat(1, self.num_obstacles, 1)
+        self.dist_to_obstacles = torch.norm(boat_positions_repeated - self.obstacle_position, dim=2)
 
         # check termination and reset
-        self.crash_condition = (
-            (torch.abs(self.base_euler[:, 1]) > self.env_cfg["termination_if_pitch_greater_than"])
-            | (torch.abs(self.base_euler[:, 0]) > self.env_cfg["termination_if_roll_greater_than"])
-            | (torch.abs(self.rel_pos[:, 0]) > self.env_cfg["termination_if_x_greater_than"])
-            | (torch.abs(self.rel_pos[:, 1]) > self.env_cfg["termination_if_y_greater_than"])
-            | (torch.abs(self.rel_pos[:, 2]) > self.env_cfg["termination_if_z_greater_than"])
-            | (self.base_pos[:, 2] < self.env_cfg["termination_if_close_to_ground"])
-        )
-        self.reset_buf = (self.episode_length_buf > self.max_episode_length) | self.crash_condition
+        self.reset_buf = (self.episode_length_buf > self.max_episode_length)
 
-        time_out_idx = (self.episode_length_buf > self.max_episode_length).nonzero(as_tuple=False).flatten()
-        self.extras["time_outs"] = torch.zeros_like(self.reset_buf, device=self.device, dtype=gs.tc_float)
-        self.extras["time_outs"][time_out_idx] = 1.0
+        # build a collision mask, reset if collision!
+        collision_mask = self.dist_to_obstacles < (self.obstacle_radius + self.env_cfg["boat_core_radius"]) + 0.05
+        if collision_mask.any():
+            self.reset_buf[collision_mask.any(dim=1)] = True
 
+        # reset the envs
         self.reset_idx(self.reset_buf.nonzero(as_tuple=False).flatten())
 
-        # compute reward
+        # last action
+        self.last_actions[:] = self.actions[:]
+
+        # compute reward, according to reward_cfg
         self.rew_buf[:] = 0.0
         for name, reward_func in self.reward_functions.items():
             rew = reward_func() * self.reward_scales[name]
             self.rew_buf += rew
             self.episode_sums[name] += rew
 
-        # compute observations
+        # collect observations, NOTE: add obstacle velocity if planning to use dynamic obstacles
         self.obs_buf = torch.cat(
             [
-                torch.clip(self.rel_pos * self.obs_scales["rel_pos"], -1, 1),
-                self.base_quat,
-                torch.clip(self.base_lin_vel * self.obs_scales["lin_vel"], -1, 1),
-                torch.clip(self.base_ang_vel * self.obs_scales["ang_vel"], -1, 1),
+                # boat
+                self.boat_core_pose[:, :2],
+                self.boat_core_pose[:, 5].unsqueeze(1),
+                self.boat_core_velocity[:, :2],
+                self.boat_core_velocity[:, 5].unsqueeze(1),
+
+                # obstacles
+                self.dist_to_obstacles.view(self.num_envs, -1),
+                self.obstacle_position.view(self.num_envs, -1),
+                # self.obstacle_velocity[:, :, :2].reshape(self.num_envs, -1),
+
+                # history
                 self.last_actions,
             ],
             axis=-1,
         )
 
-        self.last_actions[:] = self.actions[:]
-
-        return self.obs_buf, None, self.rew_buf, self.reset_buf, self.extras
+        return self.obs_buf, None, self.rew_buf, self.reset_buf, self.extras # extras are empty for now
 
     def get_observations(self):
+        """ Get the observations.
+        """
+
         return self.obs_buf
 
     def get_privileged_observations(self):
+        """ Get the privileged observations.
+
+        NOTE: Not implemented, and not yet necessary.
+        """
+
         return None
 
     def reset_idx(self, envs_idx):
+        """ Reset the given environments.
+
+        Args:
+            envs_idx (ArrayLike): Indices of the environments to reset.
+        """
+
+        # check if there are any environments to reset
         if len(envs_idx) == 0:
             return
 
-        # reset base
-        self.base_pos[envs_idx] = self.base_init_pos
-        self.last_base_pos[envs_idx] = self.base_init_pos
-        self.rel_pos = self.commands - self.base_pos
-        self.last_rel_pos = self.commands - self.last_base_pos
-        self.base_quat[envs_idx] = self.base_init_quat.reshape(1, -1)
-        self.drone.set_pos(self.base_pos[envs_idx], zero_velocity=True, envs_idx=envs_idx)
-        self.drone.set_quat(self.base_quat[envs_idx], zero_velocity=True, envs_idx=envs_idx)
-        self.base_lin_vel[envs_idx] = 0
-        self.base_ang_vel[envs_idx] = 0
-        self.drone.zero_all_dofs_velocity(envs_idx)
+        # reset boat core
+        self.boat_core_pose[envs_idx] = self.boat_core_pose_init
+        self.last_core_pose[envs_idx] = torch.zeros_like(self.boat_core_pose_init)
+
+        self.rel_boat_pos[envs_idx] = self.commands[envs_idx] - self.boat_core_pose[envs_idx, :3]
+        self.last_rel_boat_pos[envs_idx] = self.rel_boat_pos[envs_idx]
+        self.boat_core.set_dofs_position(self.boat_core_pose[envs_idx], zero_velocity=True, envs_idx=envs_idx)
+        self.boat_core_velocity[envs_idx] = torch.zeros_like(self.boat_core_velocity[envs_idx])
 
         # reset buffers
-        self.last_actions[envs_idx] = 0.0
-        self.episode_length_buf[envs_idx] = 0
+        self.last_actions[envs_idx] = torch.zeros_like(self.last_actions[envs_idx])
+        self.episode_length_buf[envs_idx] = 0.0
         self.reset_buf[envs_idx] = True
+        self.leaving_grid_buf[envs_idx] = 0
+        self.dist_to_obstacles[envs_idx, :] = 0.0
 
-        # fill extras
+        # randomly place obstacles
+        for idx in range(self.num_obstacles):
+            # random position
+            pose_tensor = torch.zeros_like(self.obstacle_pose[envs_idx, idx, :])
+            pose_tensor[:, 0] = self._gs_rand_float(self.env_cfg["obstacle_min_pos"][0], self.env_cfg["obstacle_max_pos"][0], (len(envs_idx),), self.device)
+            pose_tensor[:, 1] = self._gs_rand_float(self.env_cfg["obstacle_min_pos"][1], self.env_cfg["obstacle_max_pos"][1], (len(envs_idx),), self.device)
+            pose_tensor[:, 2] = self.env_cfg["obstacle_z_pos"]
+
+            # obstacle pose and position
+            self.obstacle_position[envs_idx, idx] = pose_tensor[:, :2]
+            self.obstacle_pose[envs_idx, idx] = pose_tensor
+
+            # apply the pose
+            obstacle = self.dynamic_obstacles[idx]["obstacle"]
+            obstacle.set_dofs_position(self.obstacle_pose[envs_idx, idx], zero_velocity=True, envs_idx=envs_idx)
+
+        # fill extras (logging and tensorboard)
         self.extras["episode"] = {}
         for key in self.episode_sums.keys():
             self.extras["episode"]["rew_" + key] = (
-                torch.mean(self.episode_sums[key][envs_idx]).item() / self.env_cfg["episode_length_s"]
+                torch.mean(self.episode_sums[key][envs_idx]).item() / self.env_cfg["episode_length_seconds"]
             )
             self.episode_sums[key][envs_idx] = 0.0
 
-        self._resample_commands(envs_idx)
-
     def reset(self):
+        """ Reset the environment.
+        """
+
         self.reset_buf[:] = True
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
         return self.obs_buf, None
 
-    # ------------ reward functions----------------
+    # ---------------------- resampling functions -------------------------#
+    def _resample_commands(self, envs_idx):
+        """ Resample the target positions for the given environments.
+
+        TODO: Not implemented yet.
+
+        Args:
+            envs_idx (ArrayLike): Indices of the environments to resample the target.
+        """
+
+        self.commands[envs_idx, 0] = self._gs_rand_float(*self.command_cfg["pos_x_range"], (len(envs_idx),), self.device)
+        self.commands[envs_idx, 1] = self._gs_rand_float(*self.command_cfg["pos_y_range"], (len(envs_idx),), self.device)
+        self.commands[envs_idx, 2] = self._gs_rand_float(*self.command_cfg["pos_z_range"], (len(envs_idx),), self.device)
+        if self.target is not None:
+            self.target.set_pos(self.commands[envs_idx], zero_velocity=True, envs_idx=envs_idx)
+
+    # -------------------------- reward functions ------------------------- #
     def _reward_target(self):
-        target_rew = torch.sum(torch.square(self.last_rel_pos), dim=1) - torch.sum(torch.square(self.rel_pos), dim=1)
+        target_rew = torch.sum(torch.square(self.last_rel_boat_pos), dim=1) - torch.sum(torch.square(self.rel_boat_pos), dim=1)
+
         return target_rew
 
     def _reward_smooth(self):
         smooth_rew = torch.sum(torch.square(self.actions - self.last_actions), dim=1)
         return smooth_rew
 
-    def _reward_yaw(self):
-        yaw = self.base_euler[:, 2]
-        yaw = torch.where(yaw > 180, yaw - 360, yaw) / 180 * 3.14159  # use rad for yaw_reward
-        yaw_rew = torch.exp(self.reward_cfg["yaw_lambda"] * torch.abs(yaw))
-        return yaw_rew
+    def _reward_collision(self):
+        collision_rew = (self.dist_to_obstacles.min(dim=1).values) - \
+                        (self.env_cfg["boat_core_radius"] + self.obstacle_radius)
+
+        collision_rew = torch.where(collision_rew > 0.2, -1 * torch.ones_like(collision_rew),
+                                    1.0 / (collision_rew.abs() + 0.0001))
+        return collision_rew
+
+    def _reward_grid(self):
+        grid_rew = self.leaving_grid_buf
+        return grid_rew
 
     def _reward_angular(self):
-        angular_rew = torch.norm(self.base_ang_vel / 3.14159, dim=1)
+        angular_rew = torch.norm(self.boat_core_velocity[:, 5].unsqueeze(1) / torch.pi, dim=1)
         return angular_rew
 
-    def _reward_crash(self):
-        crash_rew = torch.zeros((self.num_envs,), device=self.device, dtype=gs.tc_float)
-        crash_rew[self.crash_condition] = 1
-        return crash_rew
+    # ---------------------- misc functions ---------------------------- #
+    def _at_target(self):
+        at_target = (
+            (torch.norm(self.rel_boat_pos, dim=1) < self.env_cfg["at_target_threshold"]).nonzero(as_tuple=False).flatten()
+        )
+        return at_target
 
-    # ------------ misc functions----------------
-    def _is_collision(pos, radius, existing_obstacles):
+    def _is_collision(self, pos, radius, existing_obstacles):
+        """ Check if a new obstacle collides with existing obstacles.
+        """
+
         for obstacle_dict in existing_obstacles:
-            obs_pos = obstacle_dict["position"]
+            obs_pos = obstacle_dict["pose"][:2]
             obs_radius = obstacle_dict["radius"]
 
             if (abs(pos[0] - obs_pos[0]) < (radius + obs_radius) and
@@ -372,7 +520,17 @@ class BoatEnv:
 
         return False
 
-    def _convert_rotation(input_rotation, input_type='quat', output_type='euler'):
+    def _convert_rotation(self, input_rotation, input_type='quat', output_type='euler'):
+        """ Convert rotation representation.
+
+        Args:
+            input_rotation (ArrayLike): Input rotation.
+            input_type (str, optional): Representation type. Defaults to 'quat'.
+            output_type (str, optional): Ourput rotation type. Defaults to 'euler'.
+
+        Returns:
+            ArrayLike: Output rotation.
+        """
         if input_type == output_type:
             return input_rotation
 
@@ -387,3 +545,51 @@ class BoatEnv:
             return r.as_quat()
 
         return None
+
+    def _gs_rand_float(self, lower, upper, shape, device):
+        """ Generate a random float tensor.
+
+        Args:
+            lower (float): Lower bound.
+            upper (float): Upper bound.
+            shape (ArrayLike): Shape of the tensor.
+            device (str): Device to use.
+        """
+
+        return (upper - lower) * torch.rand(size=shape, device=device) + lower
+
+    def _update_obstacle_velocities(self):
+        """ Update the velocity of dynamic obstacles, and check for collisions with the grid.
+
+        TODO: Make this more efficient.
+        """
+
+        # resample obstacle velocities
+        # NOTE: dynamic obstacles are not used in the current setup
+        resample = self.step_counter % self.env_cfg["obstacle_resample_velocity_steps"] == 0
+        if resample:
+            random_velocity = torch.rand(self.num_envs, self.num_obstacles, 6, device=self.device)
+
+            random_velocity = (random_velocity - 0.5) * 2 * self.env_cfg["obstacle_base_velocity"]
+            random_velocity[:, :, 2:] = 0.0
+
+            self.obstacle_velocity = random_velocity
+
+            for i, obstacle_dict in enumerate(self.dynamic_obstacles):
+                obstacle_dict["obstacle"].set_dofs_velocity(self.obstacle_velocity[:, i, :])
+
+            # update obstacle positions
+            self.obstacle_position += self.obstacle_velocity[:, :, :2] * self.env_cfg["dt"]
+
+        # make sure obstacles stay in the area
+        mask_x_obstacles = (self.obstacle_position[:, :, 0] + self.obstacle_velocity[:, :, 0] * self.env_cfg["dt"] > self.env_cfg["obstacle_max_pos"][0]) | \
+            (self.obstacle_position[:, :, 0] + self.obstacle_velocity[:, :, 0] * self.env_cfg["dt"] < self.env_cfg["obstacle_min_pos"][0])
+
+        mask_y_obstacles = (self.obstacle_position[:, :, 1] + self.obstacle_velocity[:, :, 1] * self.env_cfg["dt"] > self.env_cfg["obstacle_max_pos"][1]) | \
+            (self.obstacle_position[:, :, 1] + self.obstacle_velocity[:, :, 1] * self.env_cfg["dt"] < self.env_cfg["obstacle_min_pos"][1])
+
+        self.obstacle_velocity[:, :, 0][mask_x_obstacles] = -self.obstacle_velocity[:, :, 0][mask_x_obstacles]
+        self.obstacle_velocity[:, :, 1][mask_y_obstacles] = -self.obstacle_velocity[:, :, 1][mask_y_obstacles]
+
+        for i, obstacle_dict in enumerate(self.dynamic_obstacles):
+            obstacle_dict["obstacle"].set_dofs_velocity(self.obstacle_velocity[:, i, :])

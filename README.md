@@ -1,6 +1,8 @@
-# Blue Boat MavROS Guide
+# Blue Boat RL and MavROS Guide
 
-Part A is focused on ROS networking setups and access to MavROS Topics. In part B, you can directly set up a UDP connection to the boat, and use MavLink Python package to communicate (still testing).
+Part A is focused on `ROS networking` setups and access to MavROS Topics. In part B, you can directly set up a `UDP connection` to the boat, and use MavLink Python package to communicate (still testing).
+
+Part C introduces the `Blue Boat Genesis Environment`, efficient and parallelized simulation for reinforcement learning!
 
 Code partly adopted from [this repository](https://github.com/ImStian/blueboat_globalpathplanner/tree/main).
 
